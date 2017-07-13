@@ -8,6 +8,8 @@ import (
 	"net/url"
 
 	goquery "github.com/google/go-querystring/query"
+	"io/ioutil"
+	"bytes"
 )
 
 const (
@@ -326,6 +328,15 @@ func (s *Sling) ReceiveSuccess(successV interface{}) (*http.Response, error) {
 	return s.Receive(successV, nil)
 }
 
+// ReceiveSuccessFallback creates a new HTTP request and returns the response. Success
+// responses (2XX) are JSON decoded into the value pointed to by successV.
+// if JSON can not be decoded to successV struct trying decode to successFallbackV.
+// Any error creating the request, sending it, or decoding a 2XX response
+// is returned.
+func (s *Sling) ReceiveSuccessFallback(successV interface{}, successFallbackV interface{}) (*http.Response, error) {
+	return s.ReceiveFallback(successV, nil, successFallbackV)
+}
+
 // Receive creates a new HTTP request and returns the response. Success
 // responses (2XX) are JSON decoded into the value pointed to by successV and
 // other responses are JSON decoded into the value pointed to by failureV.
@@ -333,18 +344,38 @@ func (s *Sling) ReceiveSuccess(successV interface{}) (*http.Response, error) {
 // returned.
 // Receive is shorthand for calling Request and Do.
 func (s *Sling) Receive(successV, failureV interface{}) (*http.Response, error) {
+	return s.ReceiveFallback(successV, failureV, nil)
+}
+
+// Receive creates a new HTTP request and returns the response. Success
+// responses (2XX) are JSON decoded into the value pointed to by successV and
+// if JSON can not be decoded to successV struct trying decode to successFallbackV.
+// other responses are JSON decoded into the value pointed to by failureV.
+// Any error creating the request, sending it, or decoding the response is
+// returned.
+// Receive is shorthand for calling Request and Do.
+func (s *Sling) ReceiveFallback(successV, failureV interface{}, successFallbackV interface{}) (*http.Response, error) {
 	req, err := s.Request()
 	if err != nil {
 		return nil, err
 	}
-	return s.Do(req, successV, failureV)
+	return s.DoFallback(req, successV, failureV, successFallbackV)
+}
+
+// Do sends an HTTP request and returns the response. Success responses (2XX)
+// are JSON decoded into the value pointed to by successV and other responses
+// if JSON can not be decoded to successV struct trying decode to successFallbackV.
+// are JSON decoded into the value pointed to by failureV.
+// Any error sending the request or decoding the response is returned.
+func (s *Sling) Do(req *http.Request, successV, failureV interface{}) (*http.Response, error) {
+	return s.DoFallback(req, successV, failureV, nil)
 }
 
 // Do sends an HTTP request and returns the response. Success responses (2XX)
 // are JSON decoded into the value pointed to by successV and other responses
 // are JSON decoded into the value pointed to by failureV.
 // Any error sending the request or decoding the response is returned.
-func (s *Sling) Do(req *http.Request, successV, failureV interface{}) (*http.Response, error) {
+func (s *Sling) DoFallback(req *http.Request, successV, failureV interface{}, successFallbackV interface{}) (*http.Response, error) {
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return resp, err
@@ -359,7 +390,7 @@ func (s *Sling) Do(req *http.Request, successV, failureV interface{}) (*http.Res
 
 	// Decode from json
 	if successV != nil || failureV != nil {
-		err = decodeResponseJSON(resp, successV, failureV)
+		err = decodeResponseJSON(resp, successV, failureV, successFallbackV)
 	}
 	return resp, err
 }
@@ -369,14 +400,24 @@ func (s *Sling) Do(req *http.Request, successV, failureV interface{}) (*http.Res
 // otherwise. If the successV or failureV argument to decode into is nil,
 // decoding is skipped.
 // Caller is responsible for closing the resp.Body.
-func decodeResponseJSON(resp *http.Response, successV, failureV interface{}) error {
+func decodeResponseJSON(resp *http.Response, successV, failureV interface{}, successFallbackV interface{}) error {
 	if code := resp.StatusCode; 200 <= code && code <= 299 {
 		if successV != nil {
-			return decodeResponseBodyJSON(resp, successV)
+			var err error
+			buf, _ := ioutil.ReadAll(resp.Body)
+			successBody := bytes.NewReader(buf)
+			fallbackBody := bytes.NewReader(buf)
+
+			err = decodeResponseBodyJSON(successBody, successV)
+			if err != nil && successFallbackV != nil {
+				return decodeResponseBodyJSON(fallbackBody, successFallbackV)
+			} else {
+				return err
+			}
 		}
 	} else {
 		if failureV != nil {
-			return decodeResponseBodyJSON(resp, failureV)
+			return decodeResponseBodyJSON(resp.Body, failureV)
 		}
 	}
 	return nil
@@ -385,6 +426,6 @@ func decodeResponseJSON(resp *http.Response, successV, failureV interface{}) err
 // decodeResponseBodyJSON JSON decodes a Response Body into the value pointed
 // to by v.
 // Caller must provide a non-nil v and close the resp.Body.
-func decodeResponseBodyJSON(resp *http.Response, v interface{}) error {
-	return json.NewDecoder(resp.Body).Decode(v)
+func decodeResponseBodyJSON(body io.Reader, v interface{}) error {
+	return json.NewDecoder(body).Decode(v)
 }
