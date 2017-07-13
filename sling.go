@@ -364,7 +364,6 @@ func (s *Sling) ReceiveFallback(successV, failureV interface{}, successFallbackV
 
 // Do sends an HTTP request and returns the response. Success responses (2XX)
 // are JSON decoded into the value pointed to by successV and other responses
-// if JSON can not be decoded to successV struct trying decode to successFallbackV.
 // are JSON decoded into the value pointed to by failureV.
 // Any error sending the request or decoding the response is returned.
 func (s *Sling) Do(req *http.Request, successV, failureV interface{}) (*http.Response, error) {
@@ -373,6 +372,7 @@ func (s *Sling) Do(req *http.Request, successV, failureV interface{}) (*http.Res
 
 // Do sends an HTTP request and returns the response. Success responses (2XX)
 // are JSON decoded into the value pointed to by successV and other responses
+// if JSON can not be decoded to successV trying decode to successFallbackV.
 // are JSON decoded into the value pointed to by failureV.
 // Any error sending the request or decoding the response is returned.
 func (s *Sling) DoFallback(req *http.Request, successV, failureV interface{}, successFallbackV interface{}) (*http.Response, error) {
@@ -396,23 +396,23 @@ func (s *Sling) DoFallback(req *http.Request, successV, failureV interface{}, su
 }
 
 // decodeResponse decodes response Body into the value pointed to by successV
+// if JSON can not be decoded to successV trying decode to successFallbackV.
 // if the response is a success (2XX) or into the value pointed to by failureV
 // otherwise. If the successV or failureV argument to decode into is nil,
 // decoding is skipped.
 // Caller is responsible for closing the resp.Body.
 func decodeResponseJSON(resp *http.Response, successV, failureV interface{}, successFallbackV interface{}) error {
 	if code := resp.StatusCode; 200 <= code && code <= 299 {
-		if successV != nil {
-			var err error
+		if successV != nil && successFallbackV == nil {
+			return decodeResponseBodyJSON(resp.Body, successV)
+		} else if successV != nil {
 			buf, _ := ioutil.ReadAll(resp.Body)
 			successBody := bytes.NewReader(buf)
 			fallbackBody := bytes.NewReader(buf)
 
-			err = decodeResponseBodyJSON(successBody, successV)
-			if err != nil && successFallbackV != nil {
+			err := decodeResponseBodyJSON(successBody, successV)
+			if err != nil {
 				return decodeResponseBodyJSON(fallbackBody, successFallbackV)
-			} else {
-				return err
 			}
 		}
 	} else {
